@@ -1,31 +1,37 @@
-# Runs every 30 min; each run polls for 40 min, so runs overlap and
-# GitHub's (frequent) scheduling delays don't leave gaps in the data.
+# GitHub runs scheduled jobs late and irregularly (often only every few hours),
+# so each job collects for ~5 hours and commits once an hour. The concurrency
+# group keeps one job running and at most one queued, giving near-continuous data.
 name: collect-snapshots
 on:
   schedule:
-    - cron: "7,37 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: collect-snapshots
+  cancel-in-progress: false
 jobs:
   collect:
-    runs-on: ubuntu-latest
-    timeout-minutes: 55
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install pandas pyarrow
-      - run: python collector/collect.py --minutes 40 --interval 300
-      - name: Commit snapshot
+      - name: Collect for ~5 hours, committing every hour
         run: |
           git config user.name "snapshot-bot"
           git config user.email "snapshot-bot@users.noreply.github.com"
-          git add data/
-          git commit -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)" || exit 0
-          for i in 1 2 3 4 5; do
-            git pull --rebase && git push && exit 0
-            sleep $((RANDOM % 20 + 5))
+          for hour in 1 2 3 4 5; do
+            python collector/collect.py --minutes 58 --interval 300 || true
+            git add data/
+            if git commit -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"; then
+              for i in 1 2 3 4 5; do
+                git pull --rebase && git push && break
+                sleep $((RANDOM % 20 + 5))
+              done
+            fi
           done
-          exit 1

@@ -21,7 +21,7 @@ walked up to an empty dock and gave up. This project measures that directly.
 | % time offline | Station-minutes where the station neither rents nor accepts returns | Hardware / operations issues |
 
 **Method notes**
-- Each snapshot's state is assumed to last until the next poll, **capped at 15 minutes**.
+- Each snapshot's state is assumed to last until the next poll, **capped at 10 minutes**.
   Collector outages count as *unobserved*, never as empty or full.
 - A recovery episode counts only if the station was seen going empty **and** coming back,
   with no data gap in between, so censored episodes don't bias the median.

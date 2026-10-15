@@ -16,9 +16,9 @@ ordered AS (
 )
 SELECT *,
        timezone('America/New_York', snapshot_ts)                    AS local_ts,
-       -- a state is assumed to last until the next poll, capped at 15 min so
-       -- collector outages are treated as "unobserved", not as empty/full time
-       LEAST(epoch(next_ts - snapshot_ts), 900) / 60.0              AS minutes,
+       -- a state is assumed to last until the next poll (every 5 min), capped at
+       -- 10 min so collector outages count as "unobserved", not as empty/full time
+       LEAST(epoch(next_ts - snapshot_ts), 600) / 60.0              AS minutes,
        CASE WHEN is_renting = 0 AND is_returning = 0 THEN 'offline'
             WHEN num_bikes_available = 0              THEN 'empty'
             WHEN num_docks_available = 0              THEN 'full'
@@ -49,7 +49,7 @@ WITH marked AS (
     SELECT station_id, borough, snapshot_ts, next_ts, state,
            -- start a new island when the state changes OR the data has a gap
            CASE WHEN state IS DISTINCT FROM LAG(state) OVER w
-                  OR epoch(snapshot_ts - prev_ts) > 900 THEN 1 ELSE 0 END AS new_island
+                  OR epoch(snapshot_ts - prev_ts) > 600 THEN 1 ELSE 0 END AS new_island
     FROM snap
     WINDOW w AS (PARTITION BY station_id ORDER BY snapshot_ts)
 ),
@@ -59,12 +59,12 @@ numbered AS (
 ),
 islands AS (
     SELECT station_id, borough, island, ANY_VALUE(state) AS state,
-           MIN(snapshot_ts) AS start_ts, MAX(next_ts) AS end_ts
+           MIN(snapshot_ts) AS start_ts, MAX(snapshot_ts) AS last_ts, MAX(next_ts) AS end_ts
     FROM numbered GROUP BY ALL
 ),
 with_neighbors AS (
     SELECT *,
-           LAG(end_ts)    OVER w AS prev_end, LAG(state)  OVER w AS prev_state,
+           LAG(last_ts)   OVER w AS prev_last, LAG(state)  OVER w AS prev_state,
            LEAD(start_ts) OVER w AS next_start, LEAD(state) OVER w AS next_state
     FROM islands
     WINDOW w AS (PARTITION BY station_id ORDER BY island)
@@ -74,9 +74,10 @@ SELECT station_id, borough, start_ts, end_ts,
        epoch(end_ts - start_ts) / 60.0                      AS minutes_to_recover
 FROM with_neighbors
 WHERE state = 'empty'
-  -- only fully observed episodes: we saw the station go empty AND come back
-  AND prev_end = start_ts   AND prev_state IN ('ok', 'full')
-  AND next_start = end_ts   AND next_state IN ('ok', 'full');
+  -- only fully observed episodes: we saw the station go empty AND come back,
+  -- with no data gap on either side (a gap would hide when it really changed)
+  AND prev_state IN ('ok', 'full') AND epoch(start_ts - prev_last) <= 600
+  AND next_state IN ('ok', 'full') AND next_start = end_ts AND epoch(end_ts - last_ts) <= 600;
 
 -- 4) Daily KPIs per borough, plus a city-wide "All" row (GROUPING SETS) ---------
 CREATE OR REPLACE TABLE daily_borough_kpis AS
